@@ -97,53 +97,39 @@ def delete_keycloak_user(doc, method) -> None:
 
 @frappe.whitelist(allow_guest=True)
 def keycloak_webhook():
-    """
-    Webhook endpoint for Keycloak Event Listener SPI.
-
-    Keycloak sends POST requests with a JSON payload when user events occur.
-    Expected payload format (Keycloak Event Listener SPI standard):
-    {
-        "type": "CREATE" | "UPDATE" | "DELETE",
-        "username": "user@example.com",
-        "email": "user@example.com",
-        "firstName": "John",
-        "lastName": "Doe"
-    }
-
-    Configure in Keycloak Admin Console:
-    - Realm Settings → Events → Event Listeners → Add "ext-event-webhook"
-    - Or use the built-in Event Listener SPI with a custom listener
-    """
     if frappe.request.method != "POST":
         frappe.throw("Only POST is allowed", frappe.PermissionError)
 
-    auth_header = frappe.get_request_header("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        frappe.throw("Missing or invalid Authorization header", frappe.PermissionError)
-
-    token = auth_header[len("Bearer "):].strip()
-    expected_token = _get_config("keycloak_webhook_secret") or _get_config("keycloak_client_secret")
-
-    if token != expected_token:
-        frappe.throw("Invalid token", frappe.PermissionError)
-
     data = frappe.local.form_dict
-    event_type = (data.get("type") or data.get("action") or "").upper()
+
+    event_type = data.get("type") or data.get("action") or ""
     username = data.get("username") or data.get("email")
     email = data.get("email") or username
 
-    if not username:
-        return {"status": "skipped", "reason": "no username"}
+    keycloak_username = username
+    keycloak_email = email
+    first_name = data.get("firstName") or data.get("first_name")
+    last_name = data.get("lastName") or data.get("last_name")
 
-    if event_type in ("CREATE", "CREATED"):
-        if not frappe.db.exists("User", email):
+    if not event_type:
+        event_type = _unpack_webhook_bridge_event(data)
+
+    if not event_type:
+        return {"status": "skipped", "reason": "no event type"}
+
+    event_type = event_type.upper()
+
+    if event_type in ("REGISTER", "CREATE", "CREATED"):
+        if not keycloak_email:
+            return {"status": "skipped", "reason": "no email"}
+        if not frappe.db.exists("User", keycloak_email):
             user = frappe.get_doc(
                 {
                     "doctype": "User",
-                    "email": email,
-                    "username": username.split("@")[0],
-                    "first_name": data.get("firstName", username),
-                    "last_name": data.get("lastName", ""),
+                    "email": keycloak_email,
+                    "username": (keycloak_username or keycloak_email).split("@")[0],
+                    "first_name": first_name or (keycloak_username or keycloak_email),
+                    "last_name": last_name or "",
                     "send_welcome_email": 0,
                 }
             )
@@ -151,19 +137,48 @@ def keycloak_webhook():
             frappe.db.commit()
 
     elif event_type in ("UPDATE", "UPDATED"):
-        if frappe.db.exists("User", email):
-            user = frappe.get_doc("User", email)
-            if data.get("firstName"):
-                user.first_name = data["firstName"]
-            if data.get("lastName"):
-                user.last_name = data["lastName"]
-            if data.get("email"):
-                user.email = data["email"]
+        if not keycloak_email:
+            return {"status": "skipped", "reason": "no email"}
+        if frappe.db.exists("User", keycloak_email):
+            user = frappe.get_doc("User", keycloak_email)
+            if first_name:
+                user.first_name = first_name
+            if last_name:
+                user.last_name = last_name
             user.save(ignore_permissions=True)
             frappe.db.commit()
 
     elif event_type in ("DELETE", "DELETED"):
-        if frappe.db.exists("User", email):
-            frappe.delete_doc("User", email, ignore_permissions=True)
+        if not keycloak_email:
+            return {"status": "skipped", "reason": "no email"}
+        if frappe.db.exists("User", keycloak_email):
+            frappe.delete_doc("User", keycloak_email, ignore_permissions=True)
 
     return {"status": "ok"}
+
+
+def _unpack_webhook_bridge_event(data) -> str:
+    event_type = ""
+    event_kind = data.get("eventType", "")
+    event = data.get("event", {})
+
+    if event_kind == "USER_EVENT":
+        event_type = event.get("type", "")
+        details = event.get("details", {}) or {}
+        frappe.local.form_dict["username"] = details.get("username") or frappe.local.form_dict.get("username")
+        frappe.local.form_dict["email"] = details.get("email") or frappe.local.form_dict.get("email")
+
+    elif event_kind == "ADMIN_EVENT":
+        op = event.get("operationType", "")
+        rp = event.get("resourcePath", "") or ""
+        if not rp.startswith("users/"):
+            return ""
+        event_type = op
+        rep = event.get("representation")
+        if rep:
+            frappe.local.form_dict["username"] = rep.get("username") or frappe.local.form_dict.get("username")
+            frappe.local.form_dict["email"] = rep.get("email") or frappe.local.form_dict.get("email")
+            frappe.local.form_dict["firstName"] = rep.get("firstName") or frappe.local.form_dict.get("firstName")
+            frappe.local.form_dict["lastName"] = rep.get("lastName") or frappe.local.form_dict.get("lastName")
+
+    return event_type
