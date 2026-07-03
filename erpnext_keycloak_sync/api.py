@@ -108,6 +108,7 @@ def _fetch_keycloak_user(username: str) -> dict:
     return {}
 
 
+@frappe.whitelist(allow_guest=True)
 def keycloak_webhook():
     if frappe.request.method != "POST":
         frappe.throw("Only POST is allowed", frappe.PermissionError)
