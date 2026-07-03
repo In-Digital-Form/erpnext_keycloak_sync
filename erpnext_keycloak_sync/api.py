@@ -108,6 +108,14 @@ def _fetch_keycloak_user(username: str) -> dict:
     return {}
 
 
+def _assign_default_role(user_email: str):
+    role = _get_config("keycloak_default_role") or "Architect"
+    if frappe.db.exists("Role", role) and not frappe.db.exists("Has Role", {"parent": user_email, "role": role}):
+        user = frappe.get_doc("User", user_email)
+        user.append("roles", {"role": role})
+        user.save(ignore_permissions=True)
+
+
 @frappe.whitelist(allow_guest=True)
 def keycloak_webhook():
     if frappe.request.method != "POST":
@@ -162,6 +170,7 @@ def keycloak_webhook():
             )
             user.insert(ignore_permissions=True)
             frappe.db.commit()
+            _assign_default_role(keycloak_email)
 
     elif event_type in ("UPDATE", "UPDATED"):
         if not keycloak_email:
