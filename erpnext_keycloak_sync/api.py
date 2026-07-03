@@ -1,4 +1,5 @@
 import frappe
+import json
 import requests
 from typing import Dict
 
@@ -175,7 +176,12 @@ def _unpack_webhook_bridge_event(data) -> str:
             return ""
         event_type = op
         rep = event.get("representation")
-        if rep:
+        if isinstance(rep, str):
+            try:
+                rep = json.loads(rep)
+            except (json.JSONDecodeError, TypeError):
+                rep = None
+        if isinstance(rep, dict):
             frappe.local.form_dict["username"] = rep.get("username") or frappe.local.form_dict.get("username")
             frappe.local.form_dict["email"] = rep.get("email") or frappe.local.form_dict.get("email")
             frappe.local.form_dict["firstName"] = rep.get("firstName") or frappe.local.form_dict.get("firstName")
