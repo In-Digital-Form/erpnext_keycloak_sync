@@ -96,7 +96,18 @@ def delete_keycloak_user(doc, method) -> None:
         frappe.log_error(message=str(e), title="Keycloak Sync: delete user failed")
 
 
-@frappe.whitelist(allow_guest=True)
+def _fetch_keycloak_user(username: str) -> dict:
+    if not username:
+        return {}
+    try:
+        users = _search_keycloak_user(username)
+        if users:
+            return users[0]
+    except Exception:
+        pass
+    return {}
+
+
 def keycloak_webhook():
     if frappe.request.method != "POST":
         frappe.throw("Only POST is allowed", frappe.PermissionError)
@@ -114,6 +125,20 @@ def keycloak_webhook():
 
     if not event_type:
         event_type = _unpack_webhook_bridge_event(data)
+
+        data = frappe.local.form_dict
+        keycloak_username = data.get("username") or data.get("email")
+        keycloak_email = data.get("email") or keycloak_username
+        first_name = data.get("firstName") or data.get("first_name") or first_name
+        last_name = data.get("lastName") or data.get("last_name") or last_name
+
+        if not keycloak_email and keycloak_username:
+            user_data = _fetch_keycloak_user(keycloak_username)
+            if user_data:
+                keycloak_email = user_data.get("email") or keycloak_email
+                keycloak_username = user_data.get("username") or keycloak_username
+                first_name = first_name or user_data.get("firstName")
+                last_name = last_name or user_data.get("lastName")
 
     if not event_type:
         return {"status": "skipped", "reason": "no event type"}
